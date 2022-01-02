@@ -1,14 +1,14 @@
 // include the library code:
-#include <Adafruit_CharacterOLED.h>
+//#include <Adafruit_CharacterOLED.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Arduino_JSON.h>
 #include "time.h"
 #include "preferences.h" //file containing User preferences
+#include <LiquidCrystal.h>
 
 /*
   Adafruit OLED Wiring Guide (https://www.adafruit.com/product/823):
-
    OLED pin  <-->   ESP32 pin
     1 (gnd)         GND
     2 (vin)         VIN
@@ -19,9 +19,7 @@
    12 (d5)          27
    13 (d6)          12
    14 (d7)          13
-
 */
-Adafruit_CharacterOLED lcd(OLED_V2, 14, 32, 26, 33, 27, 12, 13);
 
 #define SWITCH_PIN 25 //sets pin for direction toggle switch connect other end to GND
 
@@ -39,51 +37,43 @@ time_t currentEpochTime;
 struct tm currentTime;
 char display[20];
 char displayList[8][20];
-byte listCount = 1;
+int listCount = 1;
 bool forceRefresh = true;
 bool switchState = true;
 char url[sizeof(serverIP) + sizeof(stationID) + 19];
-byte numberOfArrivals;
+int numberOfArrivals;
+
+LiquidCrystal *lcd;
 
 void setup()
 {
-  Serial.begin(115200);
-  while (!Serial)
-    ;
+  lcd = new LiquidCrystal(14, 32, 26, 33, 27, 12, 13);
 
-  Serial.println("Initializing...");
-
-  //Sets up toggle switch pin with internal pullup resistor
-  pinMode(SWITCH_PIN, INPUT_PULLUP);
-
-  //Initialize the lcd
-  Serial.print("LCD - ");
-  lcd.begin(16, 2);
-  Serial.println("Success!");
+  // Setup
+  lcd->begin(16, 2);
 
   // Connect to the WiFi network
   connectWifi();
 
   //Configure local time
-  Serial.print("Local time: ");
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   getLocalTime(&currentTime);
-  Serial.print(&currentTime, "%A, %B %d %Y %H:%M:%S");
-  Serial.println(" - Success!");
+  lcd->clear();
+  lcd->setCursor(0, 0);
+  lcd->print(&currentTime, "%H:%M:%S");
+  lcd->setCursor(0, 1);
+  lcd->print(&currentTime, "%B %d %Y");
+  lcd->clear();
+  
 
   // Make url for MTA data request
   sprintf(url, "http://%s:8080/by-id/%s", serverIP, stationID);
 
   delay(1000);
-  lcd.clear();
 }
 
 void loop()
 {
-//If you have a direction toggle switch this function handles it
-#ifndef DIRECTION
-  switchHandler();
-#endif
 
   //Send an HTTP GET request every time interval
   if (forceRefresh || (millis() - lastRequestTime) > requestInterval)
@@ -100,10 +90,13 @@ void loop()
       //Make server request and parse into JSON object
       JSONVar obj = JSON.parse(httpGETRequest(url));
 
+
+
       // JSON.typeof(jsonVar) can be used to get the type of the var
       if (JSON.typeof(obj) == "undefined")
       {
-        Serial.println("Parsing input failed!");
+        lcd->setCursor(0,0);
+        lcd->print("Parsing input failed!");
         return;
       }
 
@@ -112,17 +105,17 @@ void loop()
       numberOfArrivals = arrivalsArr.length();
 
       //Initiate a count of arrivals that will be missed per timeToStation
-      byte missed = 0;
+      int missed = 0;
 
       //Clear the displayList
       memset(&displayList, 0, sizeof(displayList));
 
       //Iterates through each pending arrival
-      for (byte i = 0; i < numberOfArrivals; i++)
+      for (int i = 0; i < numberOfArrivals; i++)
       {
 
         //Extracts the name of the train for the given arrival
-        String trainName = JSON.stringify(arrivalsArr[i]["route"]).substring(1, 2);
+        String trainName = JSON.stringify(arrivalsArr[i]["route"]).substring(1,2);
 
         //Extracts the arrival time of the train in epoch time
         long arrivalTime = convertToEpoch(JSON.stringify(arrivalsArr[i]["time"]));
@@ -135,9 +128,7 @@ void loop()
         {
 
           //Constructs the display string
-          sprintf(display, "%d. (%s) %s %dMin", i + 1 - missed, trainName, (direction == "N") ? "UP" : "DN", minutesAway);
-          Serial.println(display);
-
+          sprintf(display, "(%s) %s %d Min", trainName, (direction == "N") ? "8 Av." : "BKLYN", minutesAway);
           //Adds the given arrival to the display list for the lcd
           strcpy(displayList[i - missed], display);
         }
@@ -146,16 +137,61 @@ void loop()
           missed++; //increment count of missed trains per timeToStation
         }
       }
-
+      
       //Display the next arriving train on the first line of the lcd
-      lcd.setCursor(0, 0);
-      lcd.print("                "); //needed to clear the first line
-      lcd.setCursor(0, 0);
-      lcd.print(displayList[0]);
+      lcd->setCursor(0, 0);
+      lcd->print("                "); //needed to clear the first line
+      lcd->setCursor(0, 0);
+      lcd->print(displayList[0]);
+      direction = "S";
+      
+      arrivalsArr = obj["data"][direction];
+      numberOfArrivals = arrivalsArr.length();
+
+      //Initiate a count of arrivals that will be missed per timeToStation
+      missed = 0;
+
+      //Clear the displayList
+      memset(&displayList, 0, sizeof(displayList));
+
+      //Iterates through each pending arrival
+      for (int i = 0; i < numberOfArrivals; i++)
+      {
+
+        //Extracts the name of the train for the given arrival
+        String trainName = JSON.stringify(arrivalsArr[i]["route"]).substring(1,2);
+
+        //Extracts the arrival time of the train in epoch time
+        long arrivalTime = convertToEpoch(JSON.stringify(arrivalsArr[i]["time"]));
+
+        //Calculates how many minutes to arrival by comparing arrival time to current time
+        int minutesAway = (arrivalTime - currentEpochTime) / 60;
+
+        //Filters out trains that you can't possibly catch
+        if (minutesAway >= timeToStation)
+        {
+
+          //Constructs the display string
+          sprintf(display, "(%s) %s %d Min", trainName, (direction == "N") ? "8 Av." : "BKLYN", minutesAway);
+          //Adds the given arrival to the display list for the lcd
+          strcpy(displayList[i - missed], display);
+        }
+        else
+        {
+          missed++; //increment count of missed trains per timeToStation
+        }
+      }
+      
+      //Display the next arriving train on the first line of the lcd
+      lcd->setCursor(0, 1);
+      lcd->print("                "); //needed to clear the first line
+      lcd->setCursor(0, 1);
+      lcd->print(displayList[0]);
+      direction = "N";
     }
     else
     {
-      Serial.println("WiFi Disconnected");
+      lcd->print("WiFi Disconnected");
       delay(1000);
       connectWifi();
     }
@@ -163,95 +199,101 @@ void loop()
   }
 
   //Rotate the arrival displayed on the second line at specified time interval
-  if (forceRefresh || (millis() - lastDisplayTime) > displayInterval)
-  {
-
-    lcd.setCursor(0, 1);
-    lcd.print("                "); //needed to clear the line if the previous display was longer
-    lcd.setCursor(0, 1);
-    lcd.print(displayList[listCount]);
-
-    listCount++;
-    if (listCount > moreArrivals || listCount >= numberOfArrivals)
-      listCount = 1;
-
-    lastDisplayTime = millis();
-
-    forceRefresh = false;
-  }
+//  if (forceRefresh || (millis() - lastDisplayTime) > displayInterval)
+//  {
+//
+//    lcd->setCursor(0, 1);
+//    lcd->print("                "); //needed to clear the line if the previous display was longer
+//    lcd->setCursor(0, 1);
+//    lcd->print(displayList[listCount]);
+//  delay(3000);
+//    listCount++;
+//    if (listCount > moreArrivals || listCount >= numberOfArrivals)
+//      listCount = 1;
+//
+//    lastDisplayTime = millis();
+//
+//    forceRefresh = false;
+//  }
+forceRefresh = false;
 }
 
 void connectWifi()
 {
-  Serial.print("Connecting to Wifi: ");
-  Serial.print(ssid);
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Joining Wifi");
-  lcd.setCursor(0, 1);
-  lcd.print(ssid);
+  lcd->clear();
+  lcd->setCursor(0, 0);
+  lcd->print("Joining Wifi");
+  lcd->setCursor(0, 1);
+  lcd->print(ssid);
 
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED)
   {
-    delay(500);
-    Serial.print(".");
-    lcd.print(".");
-  }
+    delay(1000);
+    lcd->print(".");
+    }
 
-  lcd.setCursor(0, 0);
-  lcd.print("Connected to:");
-  Serial.println("Success!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  lcd->setCursor(0, 0);
+  lcd->print("Personal IP:");
+  lcd->setCursor(0, 1);
+  lcd->print(WiFi.localIP());
 }
+
+
 
 String httpGETRequest(char *_url)
 {
   HTTPClient http;
 
-  Serial.print("Pinging: ");
-  Serial.println(_url);
-
+//  lcd->setCursor(0, 0);
+//  lcd->print("Pinging: ");
+//  lcd->setCursor(0, 0);
+//  lcd->print(_url);
+//  lcd->setCursor(0, 1);
+//  lcd->print(&(_url[16]));
   // Connect to server url
   http.begin(_url);
 
   // Send HTTP GET request
-  byte httpResponseCode = http.GET();
+  int httpResponseCode = http.GET();
+//  lcd->clear();
+//  lcd->setCursor(0, 0);
+//  lcd->print("Did get ");
 
   if (httpResponseCode == 200)
   {
-    Serial.print("Updated: ");
-    Serial.println(&currentTime);
+//    lcd->setCursor(0, 0);
+//    lcd->print("HTTP SUCCESS ");
     return http.getString();
+
   }
   else
   {
-    Serial.print("HTTP Error code: ");
-    Serial.println(httpResponseCode);
 
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("HTTP ERROR: ");
-    lcd.print(httpResponseCode);
-    lcd.setCursor(0, 1);
-    lcd.print("SERVER DOWN");
+    lcd->clear();
+    lcd->setCursor(0, 0);
+    lcd->print("HTTP ERROR: ");
+    lcd->print(httpResponseCode);
+    lcd->setCursor(0, 1);
+    lcd->print("SERVER DOWN");
     delay(1000);
   }
 }
 
-//Manually parses the timeStamp from the train arrival and returns in epoch time
+
+////Manually parses the timeStamp from the train arrival and returns in epoch time
 long convertToEpoch(String timeStamp)
 {
 
   //Uses MTA's timestamp to determine if it's currently daylight savings time
   bool _dst;
-  if (timeStamp.substring(22, 23).toInt() != gmtOffset_sec / 3600)
-    _dst = true;
+  if (timeStamp.substring(20, 23).toInt() != gmtOffset_sec / 3600)
+    _dst = 1;
   else
-    _dst = false;
+    _dst = 0;
 
   struct tm t;
   memset(&t, 0, sizeof(tm));                            // Initalize to all 0's
@@ -266,35 +308,3 @@ long convertToEpoch(String timeStamp)
 
   return epoch;
 }
-
-// Function to handle direction toggle switch
-#ifndef DIRECTION
-void switchHandler()
-{
-  //toggles with switch
-  if (digitalRead(SWITCH_PIN) != switchState)
-  {
-    switchState = !switchState;
-
-    // Sets direcdtion per the switch state
-    if (switchState)
-      direction = "N";
-    else
-      direction = "S";
-
-    // Notifies in serial monitor
-    Serial.print("Direction: ");
-    Serial.println(direction);
-
-    // Notifies on LCD screen
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Direction set: ");
-    lcd.print(direction);
-    delay(1000);
-
-    // Forces refresh on the next loop
-    forceRefresh = true;
-  }
-}
-#endif
